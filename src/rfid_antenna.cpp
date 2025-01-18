@@ -10,6 +10,7 @@
 #include <cstdlib> 
 
 #define MAX_RANGE 5
+#define DEBUG 0
 const double TWO_PI = 2 * M_PI;
 
 namespace gazebo
@@ -17,7 +18,7 @@ namespace gazebo
   class MySensorPlugin : public ModelPlugin
   {
   public:
-    MySensorPlugin() : ModelPlugin(), sensor_value_(0.0), update_rate_(2.0) {} // Default update rate of 2 Hz
+    MySensorPlugin() : ModelPlugin(), sensor_value_(0.0), update_rate_(10.0) {} // Default update rate of 2 Hz
 
     void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf) override
     {
@@ -34,15 +35,31 @@ namespace gazebo
         // Store the model pointer
         model_ = _model;
         std::string rfidPubTopic = "ciccio";
+        phi_0_ = 0.1;
+        lambda_ = 0.1;
+        radial_range_ = 0.1;
+        P_T_ = 30;
+        G_0_ = 5.5;
         //load parameters from sdf
         if(_sdf->HasElement("topic")) {
             rfidPubTopic = _sdf->Get<std::string>("topic");
         }
         if(_sdf->HasElement("radial_range")) {
             radial_range_ = _sdf->Get<double>("radial_range");
+            std::string infoMsg = "Radial range = " + std::to_string(radial_range_);
+            RCLCPP_INFO(node_->get_logger(), infoMsg.c_str());
         }
         if(_sdf->HasElement("lambda")) {
             lambda_ = _sdf->Get<double>("lambda");
+        }
+        if(_sdf->HasElement("phi_0")) {
+            phi_0_ = _sdf->Get<double>("phi_0");
+        }
+        if(_sdf->HasElement("P_T")) {
+            P_T_ = _sdf->Get<double>("P_T");
+        }
+        if(_sdf->HasElement("G_0")) {
+            G_0_ = _sdf->Get<double>("G_0");
         }
         if(_sdf->HasElement("noise")) {
             auto _noiseElement =  _sdf->GetElement("noise");
@@ -61,10 +78,10 @@ namespace gazebo
         }
         // Create a ROS2 publisher
         rfid_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("rfid/tag_position", 10);
+        rfid_tag_pub_ = node_->create_publisher<rfid_msgs::msg::TagArray>("rfid/tag_array", 10);
 
         // Set the update period based on the desired update rate
         update_period_ = 1.0 / update_rate_;
-
         // Initialize the last update time
         last_update_time_ = model_->GetWorld()->SimTime();
 
@@ -83,10 +100,16 @@ namespace gazebo
 
         // Check if it's time to update the sensor
         if ((current_time - last_update_time_).Double() >= update_period_) {
-          auto mgsTimestamp = node_->now();
-          visualization_msgs::msg::MarkerArray outputSensorMsg;
+            auto mgsTimestamp = node_->now();
+            visualization_msgs::msg::MarkerArray outputSensorMsg;
+            rfid_msgs::msg::TagArray output;
             // Get the pose of the antenna (this plugin)
+            // ignition::math::Pose3d antenna_pose = model_->GetLink("rfid_antenna_link")->WorldPose();
             ignition::math::Pose3d antenna_pose = model_->WorldPose();
+            auto antenna_ptr = model_->GetLink("rfid_antenna_link");
+            if(antenna_ptr == nullptr) {
+                // std::cout << "SBIRRO NULLPTR" << std::endl;
+            }
             // Get the Gazebo world
             gazebo::physics::WorldPtr world = gazebo::physics::get_world();
 
@@ -98,11 +121,19 @@ namespace gazebo
                     ignition::math::Pose3d object_pose = model->WorldPose();
                     // Calculate distance between antenna and object
                     double distance = antenna_pose.Pos().Distance(object_pose.Pos());
+                    ignition::math::Pose3d sensor_pose = model_->WorldPose();
+                    // std::cout << "SENSOR POSE : \n" 
+                    //           << "X = " << sensor_pose.X() << "\n"
+                    //           << "Y = " << sensor_pose.Y() << "\n"
+                    //           << "Z = " << sensor_pose.Z() << "\n"
+                    //           << "YAW = " << sensor_pose.Yaw() << std::endl;
 
                     // Check if the object is within desired range or category
-                    if (distance < MAX_RANGE) {
-                        ignition::math::Pose3d sensor_pose = model_->WorldPose();
-                        ignition::math::Pose3d relative_pose = object_pose - sensor_pose;
+                    if (isTagInAntennaRange(antenna_pose, 
+                                            object_pose, 
+                                            distance)) {
+                        // ignition::math::Pose3d relative_pose = object_pose - sensor_pose;
+#if DEBUG
 
                         visualization_msgs::msg::Marker tagMarker;
                         tagMarker.pose.position.x = GenerateGaussianNoise(relative_pose.X());
@@ -127,18 +158,36 @@ namespace gazebo
                         tagMarker.action = 0;
                         tagMarker.id = tagCounter;
                         tagMarker.text = getTagIdFromName(model_name);
+                        tagCounter ++;
 
                         outputSensorMsg.markers.push_back(tagMarker);
+#endif
+                        //Creation of the output message
+                        output.n_tags ++;
+                        rfid_msgs::msg::Tag singleTag;
+                        singleTag.id = getTagIdFromName(model_name);
+                        singleTag.distance = distance;
+                        singleTag.phi = mod2PI(4*M_PI*distance*phi_0_/lambda_ + GenerateGaussianNoise(phi_0_));
+                        //RSSI computation
+                        ignition::math::Vector3d rel_vec = object_pose.Pos() - antenna_pose.Pos();
+                        double theta_R = acos(rel_vec.Z() / rel_vec.Length());
+                        double phi_R = atan2(rel_vec.Y(), rel_vec.X());
+                        double G_t = G_0_ * pow(cos(theta_R), 10);
+                        double rssi = P_T_ + G_t - 20 * log10(4 * M_PI * distance / lambda_) + GenerateGaussianNoise(0);
+                        singleTag.rssi = rssi;
 
-                        tagCounter ++;
-                        //TODO add the creation of the marker array
-                        // std::cout << "FOUND TAG AT POSE " << object_pose.X() << " , " << object_pose.Y() << std::endl; 
+                        output.tags.push_back(singleTag);
                     }
                 }
             }
 
             if(outputSensorMsg.markers.size() > 0) {
                 rfid_pub_->publish(outputSensorMsg);
+            }
+            if(output.tags.size() > 0) {
+                output.header.stamp = mgsTimestamp;
+                output.header.frame_id = "antenna";
+                rfid_tag_pub_->publish(output);
             }
 
             // Optionally, output to ROS console for debugging
@@ -160,10 +209,13 @@ private:
     double update_period_;
     double radial_range_;
     double lambda_;
+    double phi_0_;
     common::Time last_update_time_;
     std::normal_distribution<> noise_model_;
     float mean_;
     float stddev_;
+    double P_T_;
+    double G_0_;
 
 	float GenerateGaussianNoise(const float& value) {
 		float u1 = static_cast<float>(rand()) / RAND_MAX;
@@ -191,6 +243,52 @@ private:
         }
         return result;
     }
+
+    double modPI(const double& angle) {
+        // Use fmod to get the remainder of angle / 2π
+        double result = fmod(angle, M_PI);
+        // fmod can return negative values, so we ensure the result is positive
+        if (result < 0) {
+            result += M_PI;
+        }
+        return result;
+    }
+
+    bool isTagInAntennaRange (const ignition::math::Pose3d& antennaPoseInWorld, 
+                              const ignition::math::Pose3d& tagPoseInWorld, 
+                              const double& distance){
+        bool retVal = false;
+        if(distance > MAX_RANGE) {
+            return retVal;
+        }
+        // Step 4: Get the sensor's orientation (as a quaternion) and extract the forward direction
+        ignition::math::Quaterniond antennaRot = antennaPoseInWorld.Rot();
+        ignition::math::Vector3d antennaMeasurementAxis(1.0, 0.0, 0.0);  // Assume the sensor faces along its local Z-axis
+        ignition::math::Vector3d antennaDirInWorld = antennaRot.RotateVector(antennaMeasurementAxis);  // Rotate into world frame
+
+        //compute sensor to object vector
+        // ignition::math::Vector3d antennaToTag = antennaPoseInWorld.Pos() - tagPoseInWorld.Pos();
+        ignition::math::Vector3d antennaToTag = tagPoseInWorld.Pos() - antennaPoseInWorld.Pos();
+    
+        //normalize sensor to object and antenna dir in world vectors
+        ignition::math::Vector3d antennaToTagNorm = antennaToTag/distance;
+        ignition::math::Vector3d antennaDirInWorldNorm = antennaDirInWorld/sqrt(antennaDirInWorld.X()*antennaDirInWorld.X() + 
+                                                                                    antennaDirInWorld.Y()*antennaDirInWorld.Y() +
+                                                                                    antennaDirInWorld.Z()*antennaDirInWorld.Z());
+    
+        //compute the dot product between the two vectors
+        double dotProduct = antennaToTagNorm.X()*antennaDirInWorldNorm.X() + 
+                            antennaToTagNorm.Y()*antennaDirInWorldNorm.Y() +
+                            antennaToTagNorm.Z()*antennaDirInWorldNorm.Z();
+
+        //compute angle between the two vectors
+        double theta = modPI(acos(dotProduct));// - M_PI_2;
+        // std::cout << "Theta = " << theta << std::endl;
+        if(theta <= radial_range_) {
+            retVal = true;
+        }
+        return retVal;
+    }    
   };
 
   GZ_REGISTER_MODEL_PLUGIN(MySensorPlugin)
