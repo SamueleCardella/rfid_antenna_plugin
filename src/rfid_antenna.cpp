@@ -167,7 +167,7 @@ namespace gazebo
                         rfid_msgs::msg::Tag singleTag;
                         singleTag.id = getTagIdFromName(model_name);
                         singleTag.distance = distance;
-                        singleTag.phi = mod2PI(4*M_PI*distance*phi_0_/lambda_ + GenerateGaussianNoise(phi_0_));
+                        singleTag.phi = mod2PI(4*M_PI*distance/lambda_ + GenerateGaussianNoise(phi_0_));
                         //RSSI computation
                         ignition::math::Vector3d rel_vec = object_pose.Pos() - antenna_pose.Pos();
                         double theta_R = acos(rel_vec.Z() / rel_vec.Length());
