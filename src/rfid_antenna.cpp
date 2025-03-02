@@ -108,7 +108,6 @@ namespace gazebo
             ignition::math::Pose3d antenna_pose = model_->WorldPose();
             auto antenna_ptr = model_->GetLink("rfid_antenna_link");
             if(antenna_ptr == nullptr) {
-                // std::cout << "SBIRRO NULLPTR" << std::endl;
             }
             // Get the Gazebo world
             gazebo::physics::WorldPtr world = gazebo::physics::get_world();
@@ -172,8 +171,8 @@ namespace gazebo
                         ignition::math::Vector3d rel_vec = object_pose.Pos() - antenna_pose.Pos();
                         double theta_R = acos(rel_vec.Z() / rel_vec.Length());
                         double phi_R = atan2(rel_vec.Y(), rel_vec.X());
-                        double G_t = G_0_ * pow(cos(theta_R), 10);
-                        double rssi = P_T_ + G_t - 20 * log10(4 * M_PI * distance / lambda_) + GenerateGaussianNoise(0);
+                        double G_t = G_0_ + pow(cos(theta_R), 10);
+                        double rssi = P_T_ - 40 * log10(4 * M_PI * distance / lambda_) + GenerateGaussianNoise(0);
                         singleTag.rssi = rssi;
 
                         output.tags.push_back(singleTag);
