@@ -40,6 +40,7 @@ namespace gazebo
         radial_range_ = 0.1;
         P_T_ = 30;
         G_0_ = 5.5;
+        HPWB_ = 65.0;
         //load parameters from sdf
         if(_sdf->HasElement("topic")) {
             rfidPubTopic = _sdf->Get<std::string>("topic");
@@ -76,6 +77,7 @@ namespace gazebo
                 }    
             }
         }
+        n_ = log10(1/sqrt(2))/log10(cos(HPWB_*M_PI_2/180.0));
         // Create a ROS2 publisher
         rfid_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("rfid/tag_position", 10);
         rfid_tag_pub_ = node_->create_publisher<rfid_msgs::msg::TagArray>("rfid/tag_array", 10);
@@ -171,7 +173,9 @@ namespace gazebo
                         ignition::math::Vector3d rel_vec = object_pose.Pos() - antenna_pose.Pos();
                         double theta_R = acos(rel_vec.Z() / rel_vec.Length());
                         double phi_R = atan2(rel_vec.Y(), rel_vec.X());
-                        double G_t = G_0_ + pow(cos(theta_R), 10);
+                        // double G_t = G_0_ + pow(cos(theta_R), 10);
+                        // double G_t = G_0_ + 10*log10(cos(theta_R));
+                        double G_t = G_0_ + 10*n_*log10(cos(theta_R));
                         double rssi = P_T_ - 40 * log10(4 * M_PI * distance / lambda_) + GenerateGaussianNoise(0);
                         singleTag.rssi = rssi;
 
@@ -215,6 +219,8 @@ private:
     float stddev_;
     double P_T_;
     double G_0_;
+    double HPWB_;
+    double n_;
 
 	float GenerateGaussianNoise(const float& value) {
 		float u1 = static_cast<float>(rand()) / RAND_MAX;
